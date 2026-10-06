@@ -1,0 +1,38 @@
+{
+  "name": "software-marketplace-backend",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "nodemon --watch src --ext ts --exec tsx src/server.ts",
+    "build": "tsc",
+    "test": "tsx --test test/backend.test.ts test/unit.test.ts",
+    "test:database": "tsx --test test/database.test.ts",
+    "test:load": "tsx test/load.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^10.1.0",
+    "@fastify/jwt": "^10.2.2",
+    "@fastify/multipart": "^9.4.0",
+    "amqp-connection-manager": "^5.0.0",
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.3.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.12.5",
+    "ioredis": "^6.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.5.0",
+    "nodemailer": "^10.0.14",
+    "razorpay": "^2.9.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.14.12",
+    "@types/nodemailer": "^6.4.15",
+    "nodemon": "^3.1.14",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}

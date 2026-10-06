@@ -1,0 +1,386 @@
+{
+  "info": {
+    "_postman_id": "c4a35e9d-74ee-4dce-950c-5be46dd2de30",
+    "name": "Software Marketplace API",
+    "description": "Complete collection for the backend routes. Select the included Local environment, start the backend, and run requests individually or through the collection runner. Authentication uses HTTP-only cookies set by the auth endpoints; Postman stores and sends these automatically when cookie handling is enabled. Signup/login OTPs are sent to the configured SMTP inbox. Admin routes require an existing admin user; public signup only supports buyer and creator roles.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "softwareId", "value": "REPLACE_WITH_SOFTWARE_OBJECT_ID", "type": "string" },
+    { "key": "creatorId", "value": "REPLACE_WITH_CREATOR_USER_OBJECT_ID", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health and integrations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "description": "OTP requests require a running SMTP configuration. OTP codes are delivered to the account email. Cookie-based access and refresh tokens are stored by Postman automatically.",
+      "item": [
+        {
+          "name": "Request signup OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"new.creator@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup/request-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "signup", "request-otp"]
+            }
+          }
+        },
+        {
+          "name": "Verify signup OTP and create buyer/creator",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"new.creator@example.com\",\n  \"otp\": \"123456\",\n  \"name\": \"Example Creator\",\n  \"mobile\": \"+15551234567\",\n  \"role\": \"creator\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup/verify-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "signup", "verify-otp"]
+            }
+          }
+        },
+        {
+          "name": "Request login OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"new.creator@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login/request-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login", "request-otp"]
+            }
+          }
+        },
+        {
+          "name": "Verify login OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"new.creator@example.com\",\n  \"otp\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login/verify-otp",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login", "verify-otp"]
+            }
+          }
+        },
+        {
+          "name": "Refresh access token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh-token",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "refresh-token"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Creator",
+      "description": "Select/log in as a creator before using these endpoints. Upload Software uses multipart form-data; include a public HTTPS liveDemoUrl, select local files for images (at least two) and video (required), and optionally a PDF.",
+      "item": [
+        {
+          "name": "Upload software (multipart)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Example Software", "type": "text" },
+                { "key": "description", "value": "A sample software listing for testing the marketplace API.", "type": "text" },
+                { "key": "githubUsername", "value": "example", "type": "text" },
+                { "key": "gitRepository", "value": "https://github.com/example/software", "type": "text" },
+                { "key": "liveDemoUrl", "value": "https://demo.example.com", "type": "text" },
+                { "key": "languages", "value": "TypeScript, Node.js", "type": "text" },
+                { "key": "platformType", "value": "fullstack", "type": "text" },
+                { "key": "price", "value": "499", "type": "text" },
+                { "key": "images", "type": "file", "src": [] },
+                { "key": "images", "type": "file", "src": [] },
+                { "key": "video", "type": "file", "src": [] },
+                { "key": "pdf", "type": "file", "src": [] }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/creator/software",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "creator", "software"]
+            }
+          }
+        },
+        {
+          "name": "List my software",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/creator/software",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "creator", "software"]
+            }
+          }
+        },
+        {
+          "name": "Get my earnings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/creator/earnings",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "creator", "earnings"]
+            }
+          }
+        },
+        {
+          "name": "Update software",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Updated Example Software\",\n  \"price\": 599\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/creator/software/{{softwareId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "creator", "software", "{{softwareId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete software (no paid orders)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/creator/software/{{softwareId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "creator", "software", "{{softwareId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Buyer",
+      "description": "Browsing is public. Purchase endpoints require a buyer login. Razorpay verification requires a real payment and the signature returned by Razorpay.",
+      "item": [
+        {
+          "name": "Browse approved software",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/buyer/software?search=example&platformType=fullstack&language=TypeScript&minPrice=0&maxPrice=5000&page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "buyer", "software"],
+              "query": [
+                { "key": "search", "value": "example" },
+                { "key": "platformType", "value": "fullstack" },
+                { "key": "language", "value": "TypeScript" },
+                { "key": "minPrice", "value": "0" },
+                { "key": "maxPrice", "value": "5000" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get software details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/buyer/software/{{softwareId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "buyer", "software", "{{softwareId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get my purchases",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/buyer/purchases",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "buyer", "purchases"]
+            }
+          }
+        },
+        {
+          "name": "Initiate payment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"softwareId\": \"{{softwareId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/buyer/payment/initiate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "buyer", "payment", "initiate"]
+            }
+          }
+        },
+        {
+          "name": "Verify payment (real Razorpay payment required)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"REPLACE_WITH_INTERNAL_ORDER_OBJECT_ID\",\n  \"razorpay_order_id\": \"REPLACE_WITH_RAZORPAY_ORDER_ID\",\n  \"razorpay_payment_id\": \"REPLACE_WITH_RAZORPAY_PAYMENT_ID\",\n  \"razorpay_signature\": \"REPLACE_WITH_64_CHARACTER_RAZORPAY_SIGNATURE\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/buyer/payment/verify",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "buyer", "payment", "verify"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "description": "Requires an existing admin account. Public signup cannot create an admin user.",
+      "item": [
+        {
+          "name": "Dashboard statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/dashboard",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "dashboard"]
+            }
+          }
+        },
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "users"]
+            }
+          }
+        },
+        {
+          "name": "List all software",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/software",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "software"]
+            }
+          }
+        },
+        {
+          "name": "Approve software",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/software/{{softwareId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "software", "{{softwareId}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject software",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/software/{{softwareId}}/reject",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "software", "{{softwareId}}", "reject"]
+            }
+          }
+        },
+        {
+          "name": "Get creator earnings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/creator/{{creatorId}}/earnings",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "creator", "{{creatorId}}", "earnings"]
+            }
+          }
+        },
+        {
+          "name": "List all orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "orders"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
