@@ -39,6 +39,20 @@ function optionalUrl(name: string, protocols: string[]): string | undefined {
   return value;
 }
 
+function requiredUrl(name: string, protocols: string[]): string {
+  const value = required(name);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid URL`);
+  }
+  if (!protocols.includes(parsed.protocol)) {
+    throw new Error(`${name} must use ${protocols.join(" or ")}`);
+  }
+  return value;
+}
+
 function optionalEmail(name: string): string | undefined {
   const value = process.env[name]?.trim();
   if (!value) return undefined;
@@ -128,7 +142,7 @@ validateProductionSecrets(NODE_ENV, JWT_ACCESS_SECRET, JWT_REFRESH_SECRET);
 
 export const ENV = {
   PORT: positiveInteger("PORT", 5000),
-  MONGO_URI: required("MONGO_URI"),
+  DATABASE_URL: requiredUrl("DATABASE_URL", ["postgres:", "postgresql:"]),
   NODE_ENV,
   CORS_ORIGINS: corsOrigins(NODE_ENV),
   REDIS_URL: optionalUrl("REDIS_URL", ["redis:", "rediss:"]),

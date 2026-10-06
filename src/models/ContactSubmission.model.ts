@@ -1,6 +1,8 @@
-import { Schema, model, Document } from "mongoose";
+import { query } from "../config/database";
 
-export interface IContactSubmission extends Document {
+export interface IContactSubmission {
+  _id: string;
+  id: string;
   name: string;
   phone: string;
   email: string;
@@ -10,27 +12,40 @@ export interface IContactSubmission extends Document {
   createdAt: Date;
 }
 
-const contactSubmissionSchema = new Schema<IContactSubmission>(
-  {
-    name: { type: String, required: true, trim: true, maxlength: 100 },
-    phone: { type: String, required: true, trim: true, maxlength: 25 },
-    email: { type: String, required: true, trim: true, lowercase: true, maxlength: 254 },
-    subject: { type: String, required: true, enum: [
-      "General question",
-      "Buying a product",
-      "Selling on Craftmarket",
-      "Report a problem",
-      "Something else",
-    ] },
-    query: { type: String, required: true, trim: true, minlength: 10, maxlength: 5000 },
-    status: { type: String, enum: ["new", "in-progress", "resolved"], default: "new", required: true },
-  },
-  { timestamps: true }
-);
+const CONTACT_FIELDS = `id AS "_id", id, name, phone, email, subject, query, status,
+  created_at AS "createdAt"`;
 
-contactSubmissionSchema.index({ createdAt: -1 });
+export async function createContactSubmission(data: {
+  name: string; phone: string; email: string; subject: string; query: string;
+}): Promise<IContactSubmission> {
+  const result = await query<IContactSubmission>(
+    `INSERT INTO contact_submissions (name, phone, email, subject, query)
+     VALUES ($1,$2,$3,$4,$5) RETURNING ${CONTACT_FIELDS}`,
+    [data.name.trim(), data.phone.trim(), data.email.trim().toLowerCase(), data.subject, data.query.trim()]
+  );
+  return result.rows[0];
+}
 
-export const ContactSubmissionModel = model<IContactSubmission>(
-  "ContactSubmission",
-  contactSubmissionSchema
-);
+export async function listContactSubmissions(): Promise<IContactSubmission[]> {
+  const result = await query<IContactSubmission>(
+    `SELECT ${CONTACT_FIELDS} FROM contact_submissions ORDER BY created_at DESC`
+  );
+  return result.rows;
+}
+
+export async function updateContactSubmissionStatus(
+  id: string,
+  status: IContactSubmission["status"]
+): Promise<IContactSubmission | null> {
+  const result = await query<IContactSubmission>(
+    `UPDATE contact_submissions SET status = $2, updated_at = now()
+     WHERE id = $1 RETURNING ${CONTACT_FIELDS}`,
+    [id, status]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function deleteContactSubmission(id: string): Promise<boolean> {
+  const result = await query("DELETE FROM contact_submissions WHERE id = $1", [id]);
+  return (result.rowCount ?? 0) > 0;
+}

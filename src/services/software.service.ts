@@ -1,4 +1,9 @@
-import { ISoftware, PlatformType, SoftwareModel } from "../models/Software.model";
+import {
+  createSoftware as insertSoftware,
+  searchSoftwareListings,
+  type ISoftware,
+  type PlatformType,
+} from "../models/Software.model";
 
 export interface CreateSoftwareData {
   title: string;
@@ -16,7 +21,7 @@ export interface CreateSoftwareData {
 }
 
 export async function createSoftware(data: CreateSoftwareData): Promise<ISoftware> {
-  return SoftwareModel.create(data);
+  return insertSoftware(data);
 }
 
 export async function searchSoftware(query: {
@@ -28,32 +33,9 @@ export async function searchSoftware(query: {
   page?: number;
   limit?: number;
 }) {
-  const filter: Record<string, unknown> = { status: "approved" };
-
-  if (query.search?.trim()) {
-    filter.$text = { $search: query.search };
-  }
-  if (query.platformType) filter.platformType = query.platformType;
-  if (query.language?.trim()) filter.languages = query.language.trim();
-  if (query.minPrice !== undefined || query.maxPrice !== undefined) {
-    const price: { $gte?: number; $lte?: number } = {};
-    if (query.minPrice !== undefined) price.$gte = query.minPrice;
-    if (query.maxPrice !== undefined) price.$lte = query.maxPrice;
-    filter.price = price;
-  }
-
   const page = query.page ?? 1;
   const limit = query.limit ?? 10;
-
-  const [items, total] = await Promise.all([
-    SoftwareModel.find(filter)
-      .select("-gitRepository")
-      .populate("creator", "name avatar")
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .sort({ createdAt: -1 }),
-    SoftwareModel.countDocuments(filter),
-  ]);
+  const { items, total } = await searchSoftwareListings({ ...query, page, limit });
 
   return { items, total, page, pages: Math.ceil(total / limit) };
 }

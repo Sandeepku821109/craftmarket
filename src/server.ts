@@ -2,7 +2,7 @@ import { buildApp } from "./app";
 import { connectDB } from "./config/database";
 import { ENV } from "./config/env";
 import { getInfrastructureStatus } from "./config/infrastructure";
-import mongoose from "mongoose";
+import { closeDatabase } from "./config/database";
 
 async function start() {
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;
@@ -25,7 +25,7 @@ async function start() {
       startedApp.log.info({ signal }, "Graceful shutdown started");
       const results = await Promise.allSettled([
         startedApp.close(),
-        mongoose.disconnect(),
+        closeDatabase(),
       ]);
       for (const result of results) {
         if (result.status === "rejected") {
@@ -37,7 +37,7 @@ async function start() {
     process.once("SIGINT", () => void shutdown("SIGINT"));
     process.once("SIGTERM", () => void shutdown("SIGTERM"));
   } catch (error) {
-    const cleanupOperations = [mongoose.disconnect()];
+    const cleanupOperations: Promise<unknown>[] = [closeDatabase()];
     if (app) cleanupOperations.push(app.close());
     const cleanupResults = await Promise.allSettled(cleanupOperations);
     for (const result of cleanupResults) {

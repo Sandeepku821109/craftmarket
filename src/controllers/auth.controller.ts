@@ -3,7 +3,12 @@ import { sendSuccess, sendError } from "../utils/apiResponse";
 import { createAndSendOtp, verifyOtp } from "../services/otp.service";
 import { createUser, findUserByIdentifier, issueTokens } from "../services/auth.service";
 import { ENV } from "../config/env";
-import { UserModel, type IUser } from "../models/User.model";
+import {
+  clearRefreshToken,
+  findUserById,
+  userExists,
+  type IUser,
+} from "../models/User.model";
 import { verifyRefreshToken, type TokenPayload } from "../utils/jwt.util";
 import { z } from "zod";
 
@@ -14,7 +19,7 @@ const mobileSchema = z.string().trim()
   .refine((value) => (value.match(/\d/g) || []).length >= 7 && (value.match(/\d/g) || []).length <= 15);
 
 function isDuplicateKeyError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === 11000;
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
 
 function publicUser(user: IUser) {
@@ -44,7 +49,7 @@ export async function requestSignupOtp(req: FastifyRequest, reply: FastifyReply)
   const email = parsed.data.email.toLowerCase();
   const [existingEmail, existingMobile] = await Promise.all([
     findUserByIdentifier(email),
-    UserModel.exists({ mobile: parsed.data.mobile.trim() }),
+    userExists("mobile", parsed.data.mobile.trim()),
   ]);
   if (existingEmail) return sendError(reply, "An account with this email already exists. Sign in instead.", 409);
   if (existingMobile) return sendError(reply, "An account with this mobile number already exists. Sign in instead.", 409);
@@ -68,7 +73,7 @@ export async function verifySignupOtp(req: FastifyRequest, reply: FastifyReply) 
   const normalizedEmail = email.toLowerCase();
   const [existingEmail, existingMobile] = await Promise.all([
     findUserByIdentifier(normalizedEmail),
-    UserModel.exists({ mobile: mobile.trim() }),
+    userExists("mobile", mobile.trim()),
   ]);
   if (existingEmail) return sendError(reply, "An account with this email already exists. Sign in instead.", 409);
   if (existingMobile) return sendError(reply, "An account with this mobile number already exists. Sign in instead.", 409);
@@ -137,10 +142,7 @@ export async function logout(req: FastifyRequest, reply: FastifyReply) {
       decoded = undefined;
     }
     if (decoded) {
-      await UserModel.findOneAndUpdate(
-        { _id: decoded.id, refreshToken: token },
-        { $unset: { refreshToken: 1 } }
-      );
+      await clearRefreshToken(decoded.id, token);
     }
   }
   reply.clearCookie("accessToken", cookieOptions);
@@ -159,7 +161,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     return sendError(reply, "Invalid refresh token", 401);
   }
 
-  const user = await UserModel.findById(decoded.id).select("+refreshToken");
+  const user = await findUserById(decoded.id, true);
   if (!user || user.refreshToken !== token) {
     return sendError(reply, "Invalid refresh token", 401);
   }

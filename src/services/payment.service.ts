@@ -1,12 +1,10 @@
 import { createHmac, timingSafeEqual } from "crypto";
-import mongoose from "mongoose";
 import { razorpayInstance } from "../config/razorpay";
 import { ENV } from "../config/env";
-import { OrderModel } from "../models/Order.model";
-import { SoftwareModel } from "../models/Software.model";
-import { UserModel } from "../models/User.model";
-import { EarningModel } from "../models/Earning.model";
-import { IOrder } from "../models/Order.model";
+import { withTransaction } from "../config/database";
+import { createOrder, findPaidOrders, ORDER_FIELDS, type IOrder } from "../models/Order.model";
+import { findSoftwareById } from "../models/Software.model";
+import { findUserById } from "../models/User.model";
 
 function serviceError(statusCode: number, message: string): Error & { statusCode: number } {
   return Object.assign(new Error(message), { statusCode });
@@ -37,7 +35,7 @@ export function getPurchaseAccessExpiry(order: {
 }
 
 export async function createRazorpayOrder(softwareId: string, buyerId: string) {
-  const software = await SoftwareModel.findById(softwareId);
+  const software = await findSoftwareById(softwareId);
   if (!software || software.status !== "approved") {
     throw serviceError(404, "Software not found");
   }
@@ -45,13 +43,9 @@ export async function createRazorpayOrder(softwareId: string, buyerId: string) {
     throw serviceError(400, "You cannot purchase your own software");
   }
 
-  const buyer = await UserModel.findById(buyerId).select("_id");
+  const buyer = await findUserById(buyerId);
   if (!buyer) throw serviceError(404, "Buyer not found");
-  const priorPaidOrders = await OrderModel.find({
-    buyer: buyerId,
-    software: software._id,
-    status: "paid",
-  }).select("paidAt accessExpiresAt createdAt");
+  const priorPaidOrders = await findPaidOrders(buyerId, software._id);
   if (priorPaidOrders.some((order) => getPurchaseAccessExpiry(order) > new Date())) {
     throw serviceError(409, "Software has already been purchased");
   }
@@ -74,15 +68,14 @@ export async function createRazorpayOrder(softwareId: string, buyerId: string) {
   const platformFee = platformFeeInPaise / 100;
   const creatorEarning = (amountInPaise - platformFeeInPaise) / 100;
 
-  const order = await OrderModel.create({
+  const order = await createOrder({
     buyer: buyerId,
     software: softwareId,
-    creator: software.creator,
+    creator: String(software.creator),
     amount,
     platformFee,
     creatorEarning,
     razorpayOrderId: razorpayOrder.id,
-    status: "created",
   });
 
   return { razorpayOrder, orderId: order._id };
@@ -107,84 +100,57 @@ export async function completeOrder(
   razorpayOrderId: string,
   signature: string
 ) {
-  const session = await mongoose.startSession();
-  let completedOrder: IOrder | null = null;
-  try {
-    await session.withTransaction(async () => {
-      const order = await OrderModel.findOne({
-        _id: orderId,
-        buyer: buyerId,
-        razorpayOrderId,
-      }).session(session);
-      if (!order) throw serviceError(404, "Order not found");
-      if (!verifyRazorpaySignature(razorpayOrderId, paymentId, signature)) {
-        throw serviceError(400, "Invalid payment signature");
-      }
+  return withTransaction(async (client) => {
+    const result = await client.query<IOrder>(
+      `SELECT ${ORDER_FIELDS} FROM orders
+       WHERE id = $1 AND buyer_id = $2 AND razorpay_order_id = $3 FOR UPDATE`,
+      [orderId, buyerId, razorpayOrderId]
+    );
+    const order = result.rows[0];
+    if (!order) throw serviceError(404, "Order not found");
+    if (!verifyRazorpaySignature(razorpayOrderId, paymentId, signature)) {
+      throw serviceError(400, "Invalid payment signature");
+    }
+    if (order.status === "paid") {
+      if (order.razorpayPaymentId !== paymentId) throw serviceError(409, "Order has already been paid");
+      return order;
+    }
+    if (order.status !== "created") throw serviceError(409, "Order is no longer payable");
 
-      if (order.status === "paid") {
-        if (order.razorpayPaymentId !== paymentId) {
-          throw serviceError(409, "Order has already been paid");
-        }
-        completedOrder = order;
-        return;
-      }
+    const paidAt = new Date();
+    const accessExpiresAt = addCalendarMonths(paidAt, PURCHASE_ACCESS_MONTHS);
+    const updated = await client.query<IOrder>(
+      `UPDATE orders SET status = 'paid', razorpay_payment_id = $2, razorpay_signature = $3,
+        paid_at = $4, access_expires_at = $5, updated_at = now()
+       WHERE id = $1 AND status = 'created' RETURNING ${ORDER_FIELDS}`,
+      [order._id, paymentId, signature, paidAt, accessExpiresAt]
+    );
+    if (!updated.rows[0]) throw serviceError(409, "Order is no longer payable");
 
-      const updatedOrder = await OrderModel.findOneAndUpdate(
-        { _id: order._id, status: "created" },
-        {
-          $set: {
-            status: "paid",
-            razorpayPaymentId: paymentId,
-            razorpaySignature: signature,
-            paidAt: new Date(),
-          },
-        },
-        { new: true, session }
-      );
-      if (!updatedOrder) throw serviceError(409, "Order is no longer payable");
-      updatedOrder.accessExpiresAt = addCalendarMonths(updatedOrder.paidAt!, PURCHASE_ACCESS_MONTHS);
-      await updatedOrder.save({ session });
+    const softwareResult = await client.query(
+      `UPDATE software SET total_sales = total_sales + 1, total_revenue = total_revenue + $2,
+       updated_at = now() WHERE id = $1`,
+      [order.software, order.amount]
+    );
+    const creatorResult = await client.query(
+      "UPDATE users SET total_earnings = total_earnings + $2, updated_at = now() WHERE id = $1",
+      [order.creator, order.creatorEarning]
+    );
+    const buyerResult = await client.query(
+      `UPDATE users SET purchased_software =
+       CASE WHEN $2 = ANY(purchased_software) THEN purchased_software ELSE array_append(purchased_software, $2) END,
+       updated_at = now() WHERE id = $1`,
+      [order.buyer, order.software]
+    );
+    if (softwareResult.rowCount !== 1 || creatorResult.rowCount !== 1 || buyerResult.rowCount !== 1) {
+      throw serviceError(500, "Could not update purchase records");
+    }
 
-      const softwareResult = await SoftwareModel.updateOne(
-        { _id: order.software },
-        { $inc: { totalSales: 1, totalRevenue: order.amount } },
-        { session }
-      );
-      const creatorResult = await UserModel.updateOne(
-        { _id: order.creator },
-        { $inc: { totalEarnings: order.creatorEarning } },
-        { session }
-      );
-      const buyerResult = await UserModel.updateOne(
-        { _id: order.buyer },
-        { $addToSet: { purchasedSoftware: order.software } },
-        { session }
-      );
-      if (
-        softwareResult.matchedCount !== 1 ||
-        creatorResult.matchedCount !== 1 ||
-        buyerResult.matchedCount !== 1
-      ) {
-        throw serviceError(500, "Could not update purchase records");
-      }
-
-      await EarningModel.create(
-        {
-          order: order._id,
-          buyer: order.buyer,
-          creator: order.creator,
-          software: order.software,
-          amount: order.amount,
-          platformFee: order.platformFee,
-          creatorEarning: order.creatorEarning,
-        },
-        { session }
-      );
-      completedOrder = updatedOrder;
-    });
-    if (!completedOrder) throw serviceError(500, "Payment completion failed");
-    return completedOrder;
-  } finally {
-    await session.endSession();
-  }
+    await client.query(
+      `INSERT INTO earnings (order_id, buyer_id, creator_id, software_id, amount, platform_fee, creator_earning)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [order._id, order.buyer, order.creator, order.software, order.amount, order.platformFee, order.creatorEarning]
+    );
+    return updated.rows[0];
+  });
 }

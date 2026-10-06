@@ -1,9 +1,11 @@
-import { Schema, model, Document, Types } from "mongoose";
+import { query } from "../config/database";
 
-export interface IOrder extends Document {
-  buyer: Types.ObjectId;
-  software: Types.ObjectId;
-  creator: Types.ObjectId;
+export interface IOrder {
+  _id: string;
+  id: string;
+  buyer: string | Record<string, unknown>;
+  software: string | Record<string, unknown>;
+  creator: string | Record<string, unknown>;
   amount: number;
   platformFee: number;
   creatorEarning: number;
@@ -16,22 +18,42 @@ export interface IOrder extends Document {
   createdAt: Date;
 }
 
-const orderSchema = new Schema<IOrder>(
-  {
-    buyer: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    software: { type: Schema.Types.ObjectId, ref: "Software", required: true },
-    creator: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    amount: { type: Number, required: true },
-    platformFee: { type: Number, required: true },
-    creatorEarning: { type: Number, required: true },
-    razorpayOrderId: { type: String, required: true },
-    razorpayPaymentId: { type: String },
-    razorpaySignature: { type: String },
-    status: { type: String, enum: ["created", "paid", "failed"], default: "created" },
-    paidAt: { type: Date },
-    accessExpiresAt: { type: Date },
-  },
-  { timestamps: true }
-);
+export const ORDER_FIELDS = `id AS "_id", id, buyer_id AS buyer, software_id AS software,
+  creator_id AS creator, amount::float8 AS amount, platform_fee::float8 AS "platformFee",
+  creator_earning::float8 AS "creatorEarning", razorpay_order_id AS "razorpayOrderId",
+  razorpay_payment_id AS "razorpayPaymentId", razorpay_signature AS "razorpaySignature",
+  status, paid_at AS "paidAt", access_expires_at AS "accessExpiresAt", created_at AS "createdAt"`;
 
-export const OrderModel = model<IOrder>("Order", orderSchema);
+export async function createOrder(data: {
+  buyer: string; software: string; creator: string; amount: number;
+  platformFee: number; creatorEarning: number; razorpayOrderId: string;
+}): Promise<IOrder> {
+  const result = await query<IOrder>(
+    `INSERT INTO orders (buyer_id, software_id, creator_id, amount, platform_fee, creator_earning, razorpay_order_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${ORDER_FIELDS}`,
+    [data.buyer, data.software, data.creator, data.amount, data.platformFee, data.creatorEarning, data.razorpayOrderId]
+  );
+  return result.rows[0];
+}
+
+export async function findPaidOrders(buyerId: string, softwareId: string): Promise<IOrder[]> {
+  const result = await query<IOrder>(
+    `SELECT ${ORDER_FIELDS} FROM orders WHERE buyer_id = $1 AND software_id = $2 AND status = 'paid'`,
+    [buyerId, softwareId]
+  );
+  return result.rows;
+}
+
+export async function countPaidOrders(): Promise<number> {
+  const result = await query<{ count: string }>("SELECT count(*) FROM orders WHERE status = 'paid'");
+  return Number(result.rows[0].count);
+}
+
+export async function paidOrderRevenue(): Promise<{ totalRevenue: number; platformEarnings: number }> {
+  const result = await query<{ totalRevenue: number; platformEarnings: number }>(
+    `SELECT COALESCE(sum(amount), 0)::float8 AS "totalRevenue",
+      COALESCE(sum(platform_fee), 0)::float8 AS "platformEarnings"
+     FROM orders WHERE status = 'paid'`
+  );
+  return result.rows[0];
+}

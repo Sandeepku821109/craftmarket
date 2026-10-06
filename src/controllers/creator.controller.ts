@@ -2,9 +2,16 @@ import { FastifyRequest, FastifyReply } from "fastify";
 import { sendSuccess, sendError } from "../utils/apiResponse";
 import { uploadToCloudinary } from "../services/upload.service";
 import { createSoftware } from "../services/software.service";
-import { UserModel } from "../models/User.model";
-import { SoftwareModel } from "../models/Software.model";
-import { OrderModel } from "../models/Order.model";
+import {
+  addUploadedSoftware,
+  findUserById,
+} from "../models/User.model";
+import {
+  deleteOwnedSoftware,
+  findOwnedSoftware,
+  listSoftwareByCreator,
+  updateSoftwareListing,
+} from "../models/Software.model";
 import { verifyPublicGitHubRepository } from "../services/github.service";
 import { z } from "zod";
 
@@ -83,30 +90,26 @@ export async function uploadSoftware(req: FastifyRequest, reply: FastifyReply) {
     price: parsed.data.price,
   });
 
-  await UserModel.findByIdAndUpdate(req.user!.id, {
-    $push: { uploadedSoftware: software._id },
-  });
+  await addUploadedSoftware(req.user!.id, software._id);
 
   return sendSuccess(reply, software, "Software submitted for review", 201);
 }
 
 export async function getMySoftware(req: FastifyRequest, reply: FastifyReply) {
-  const list = await SoftwareModel.find({ creator: req.user!.id }).sort({ createdAt: -1 });
+  const list = await listSoftwareByCreator(req.user!.id);
   return sendSuccess(reply, list);
 }
 
 export async function getMyEarnings(req: FastifyRequest, reply: FastifyReply) {
-  const user = await UserModel.findById(req.user!.id).select("totalEarnings");
-  const software = await SoftwareModel.find({ creator: req.user!.id }).select(
-    "title totalSales totalRevenue"
-  );
+  const user = await findUserById(req.user!.id);
+  const software = await listSoftwareByCreator(req.user!.id);
   return sendSuccess(reply, { totalEarnings: user?.totalEarnings, software });
 }
 
 export async function updateSoftware(req: FastifyRequest, reply: FastifyReply) {
   const { id } = req.params as { id: string };
   if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid software id", 400);
-  const software = await SoftwareModel.findOne({ _id: id, creator: req.user!.id });
+  const software = await findOwnedSoftware(id, req.user!.id);
   if (!software) return sendError(reply, "Software not found", 404);
 
   const parsed = z.object({
@@ -125,22 +128,18 @@ export async function updateSoftware(req: FastifyRequest, reply: FastifyReply) {
     }
     update.gitRepository = await verifyPublicGitHubRepository(update.gitRepository, software.githubUsername);
   }
-  Object.assign(software, update);
-  software.status = "pending";
-  await software.save();
+  const updated = await updateSoftwareListing(id, req.user!.id, update);
+  if (!updated) return sendError(reply, "Software not found", 404);
 
-  return sendSuccess(reply, software, "Updated successfully");
+  return sendSuccess(reply, updated, "Updated successfully");
 }
 
 export async function deleteSoftware(req: FastifyRequest, reply: FastifyReply) {
   const { id } = req.params as { id: string };
   if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid software id", 400);
-  const hasPaidOrders = await OrderModel.exists({ software: id, status: "paid" });
-  if (hasPaidOrders) return sendError(reply, "Software with completed purchases cannot be deleted", 409);
-  const software = await SoftwareModel.findOneAndDelete({ _id: id, creator: req.user!.id });
+  const result = await deleteOwnedSoftware(id, req.user!.id);
+  if (result.hasPaidOrders) return sendError(reply, "Software with completed purchases cannot be deleted", 409);
+  const software = result.software;
   if (!software) return sendError(reply, "Software not found", 404);
-  await UserModel.findByIdAndUpdate(req.user!.id, {
-    $pull: { uploadedSoftware: software._id },
-  });
   return sendSuccess(reply, null, "Deleted successfully");
 }

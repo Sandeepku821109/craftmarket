@@ -4,48 +4,47 @@ import { test } from "node:test";
 import { configureTestEnvironment } from "./testEnvironment";
 
 configureTestEnvironment();
-const mongoUri = process.env.MONGO_TEST_URI;
+const databaseUrl = process.env.DATABASE_TEST_URL;
 
-if (mongoUri) {
+if (databaseUrl) {
   let databaseName: string;
   try {
-    const parsed = new URL(mongoUri);
-    if (parsed.protocol !== "mongodb:" && parsed.protocol !== "mongodb+srv:") {
-      throw new Error();
-    }
+    const parsed = new URL(databaseUrl);
+    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") throw new Error();
     databaseName = decodeURIComponent(parsed.pathname.slice(1));
   } catch {
-    throw new Error("MONGO_TEST_URI must be a valid MongoDB connection URL");
+    throw new Error("DATABASE_TEST_URL must be a valid PostgreSQL connection URL");
   }
   if (!/(?:^|[_-])test(?:$|[_-])/i.test(databaseName)) {
-    throw new Error("MONGO_TEST_URI must target a database whose name clearly contains 'test'");
+    throw new Error("DATABASE_TEST_URL must target a database whose name clearly contains 'test'");
   }
+  process.env.DATABASE_URL = databaseUrl;
 }
 
-test("MongoDB persists user records and enforces unique email indexes", {
-  skip: !mongoUri && "Set MONGO_TEST_URI to an isolated database ending in a test name",
+test("PostgreSQL persists user records and enforces unique email indexes", {
+  skip: !databaseUrl && "Set DATABASE_TEST_URL to an isolated PostgreSQL test database",
 }, async () => {
-  const mongoose = await import("mongoose");
-  const { UserModel } = await import("../src/models/User.model");
+  const { connectDB, closeDatabase, query } = await import("../src/config/database");
+  const { createUser, findUserById } = await import("../src/models/User.model");
   const unique = randomUUID();
   const email = `integration-${unique}@example.invalid`;
   const mobile = `+1555${Date.now().toString().slice(-7)}`;
 
-  await mongoose.default.connect(mongoUri!);
+  await connectDB();
+  let createdId: string | undefined;
   try {
-    await UserModel.init();
-    const created = await UserModel.create({
+    const created = await createUser({
       name: "Database Integration Test",
       email,
       mobile,
       role: "buyer",
-      isVerified: true,
     });
-    const fetched = await UserModel.findById(created._id);
+    createdId = created._id;
+    const fetched = await findUserById(created._id);
     assert.equal(fetched?.email, email);
     assert.equal(fetched?.role, "buyer");
     await assert.rejects(
-      UserModel.create({
+      createUser({
         name: "Duplicate Email Test",
         email,
         mobile: `+1666${Date.now().toString().slice(-7)}`,
@@ -55,11 +54,10 @@ test("MongoDB persists user records and enforces unique email indexes", {
         typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        error.code === 11000
+        error.code === "23505"
     );
-    await UserModel.deleteOne({ _id: created._id });
   } finally {
-    await UserModel.deleteOne({ email });
-    await mongoose.default.disconnect();
+    if (createdId) await query("DELETE FROM users WHERE id = $1", [createdId]);
+    await closeDatabase();
   }
 });

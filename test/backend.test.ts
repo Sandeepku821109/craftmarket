@@ -26,7 +26,7 @@ test("health endpoint reports the process is alive and sends security headers", 
   assert.equal(response.headers["referrer-policy"], "no-referrer");
 });
 
-test("readiness fails until the required MongoDB connection is established", async () => {
+test("readiness fails until the required PostgreSQL connection is established", async () => {
   const response = await app.inject({ method: "GET", url: "/ready" });
   assert.equal(response.statusCode, 503);
   assert.equal(response.json().status, "not_ready");
@@ -195,7 +195,7 @@ test("production config rejects weak JWT secrets and non-HTTPS CORS origins", ()
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: "production",
-    MONGO_URI: "mongodb://127.0.0.1:27017/marketplace_test",
+    DATABASE_URL: "postgresql://test:test@127.0.0.1:5432/marketplace_test",
     JWT_ACCESS_SECRET: "access-secret-with-more-than-thirty-two-characters",
     JWT_REFRESH_SECRET: "different-refresh-secret-with-more-than-32-chars",
     CLOUDINARY_CLOUD_NAME: "test-cloud",

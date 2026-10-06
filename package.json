@@ -6,6 +6,7 @@
     "build": "tsc",
     "test": "tsx --test test/backend.test.ts test/unit.test.ts",
     "test:database": "tsx --test test/database.test.ts",
+    "migrate:neon": "tsx scripts/migrate-mongo-to-neon.ts",
     "test:load": "tsx test/load.ts",
     "start": "node dist/server.js"
   },
@@ -21,8 +22,9 @@
     "fastify": "^5.12.5",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.5.0",
+    "mongodb": "^7.7.0",
     "nodemailer": "^10.0.14",
+    "pg": "^8.23.1",
     "razorpay": "^2.9.4",
     "zod": "^3.23.8"
   },
@@ -31,6 +33,7 @@
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.14.12",
     "@types/nodemailer": "^6.4.15",
+    "@types/pg": "^8.23.1",
     "nodemon": "^3.1.14",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"

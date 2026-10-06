@@ -1,6 +1,6 @@
 export function configureTestEnvironment(): void {
   process.env.NODE_ENV = "test";
-  process.env.MONGO_URI = "mongodb://127.0.0.1:27017/marketplace_test";
+  process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:5432/marketplace_test";
   process.env.JWT_ACCESS_SECRET = "test-access-secret-not-used-outside-tests";
   process.env.JWT_REFRESH_SECRET = "test-refresh-secret-not-used-outside-tests";
   process.env.CLOUDINARY_CLOUD_NAME = "test-cloud";

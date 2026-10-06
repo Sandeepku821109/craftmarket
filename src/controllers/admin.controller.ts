@@ -1,25 +1,32 @@
 import { Readable } from "node:stream";
 import { FastifyRequest, FastifyReply } from "fastify";
 import { sendSuccess, sendError } from "../utils/apiResponse";
-import { UserModel } from "../models/User.model";
-import { SoftwareModel } from "../models/Software.model";
-import { OrderModel } from "../models/Order.model";
+import { countUsers, findUserById, listUsers } from "../models/User.model";
+import {
+  countSoftware,
+  findSoftwareById,
+  listSoftwareForAdmin,
+  updateSoftwareStatus,
+} from "../models/Software.model";
 import { ENV } from "../config/env";
-import { ContactSubmissionModel } from "../models/ContactSubmission.model";
+import {
+  deleteContactSubmission as removeContactSubmission,
+  listContactSubmissions,
+  updateContactSubmissionStatus as saveContactSubmissionStatus,
+} from "../models/ContactSubmission.model";
+import { countPaidOrders, paidOrderRevenue } from "../models/Order.model";
+import { query } from "../config/database";
 import { z } from "zod";
 
-export async function getDashboardStats(req: FastifyRequest, reply: FastifyReply) {
-  const [totalUsers, totalCreators, totalBuyers, totalSoftware, totalOrders, revenueAgg] =
+export async function getDashboardStats(_req: FastifyRequest, reply: FastifyReply) {
+  const [totalUsers, totalCreators, totalBuyers, totalSoftware, totalOrders, revenue] =
     await Promise.all([
-      UserModel.countDocuments(),
-      UserModel.countDocuments({ role: "creator" }),
-      UserModel.countDocuments({ role: "buyer" }),
-      SoftwareModel.countDocuments(),
-      OrderModel.countDocuments({ status: "paid" }),
-      OrderModel.aggregate([
-        { $match: { status: "paid" } },
-        { $group: { _id: null, totalRevenue: { $sum: "$amount" }, platformEarnings: { $sum: "$platformFee" } } },
-      ]),
+      countUsers(),
+      countUsers("creator"),
+      countUsers("buyer"),
+      countSoftware(),
+      countPaidOrders(),
+      paidOrderRevenue(),
     ]);
 
   return sendSuccess(reply, {
@@ -28,18 +35,18 @@ export async function getDashboardStats(req: FastifyRequest, reply: FastifyReply
     totalBuyers,
     totalSoftware,
     totalOrders,
-    totalRevenue: revenueAgg[0]?.totalRevenue || 0,
-    platformEarnings: revenueAgg[0]?.platformEarnings || 0,
+    totalRevenue: revenue.totalRevenue,
+    platformEarnings: revenue.platformEarnings,
   });
 }
 
-export async function getAllUsers(req: FastifyRequest, reply: FastifyReply) {
-  const users = await UserModel.find().select("-refreshToken");
+export async function getAllUsers(_req: FastifyRequest, reply: FastifyReply) {
+  const users = await listUsers();
   return sendSuccess(reply, users);
 }
 
-export async function getAllSoftware(req: FastifyRequest, reply: FastifyReply) {
-  const software = await SoftwareModel.find().populate("creator", "name email mobile");
+export async function getAllSoftware(_req: FastifyRequest, reply: FastifyReply) {
+  const software = await listSoftwareForAdmin();
   return sendSuccess(reply, software);
 }
 
@@ -47,7 +54,7 @@ export async function getSoftwarePdf(req: FastifyRequest, reply: FastifyReply) {
   const { id } = req.params as { id: string };
   if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid software id", 400);
 
-  const software = await SoftwareModel.findById(id).select("pdfDocument").lean();
+  const software = await findSoftwareById(id);
   if (!software?.pdfDocument) return sendError(reply, "Product PDF not found", 404);
 
   let pdfUrl: URL;
@@ -108,35 +115,63 @@ export async function getSoftwarePdf(req: FastifyRequest, reply: FastifyReply) {
 
 export async function approveSoftware(req: FastifyRequest, reply: FastifyReply) {
   const { id } = req.params as { id: string };
-  const software = await SoftwareModel.findByIdAndUpdate(id, { status: "approved" }, { new: true });
+  const software = await updateSoftwareStatus(id, "approved");
   if (!software) return sendError(reply, "Software not found", 404);
   return sendSuccess(reply, software, "Software approved");
 }
 
 export async function rejectSoftware(req: FastifyRequest, reply: FastifyReply) {
   const { id } = req.params as { id: string };
-  const software = await SoftwareModel.findByIdAndUpdate(id, { status: "rejected" }, { new: true });
+  const software = await updateSoftwareStatus(id, "rejected");
   if (!software) return sendError(reply, "Software not found", 404);
   return sendSuccess(reply, software, "Software rejected");
 }
 
 export async function getCreatorEarnings(req: FastifyRequest, reply: FastifyReply) {
   const { id } = req.params as { id: string };
-  const creator = await UserModel.findById(id).select("name email totalEarnings");
-  const orders = await OrderModel.find({ creator: id, status: "paid" }).populate("software", "title");
+  const fullCreator = await findUserById(id);
+  const creator = fullCreator && {
+    _id: fullCreator._id,
+    id: fullCreator.id,
+    name: fullCreator.name,
+    email: fullCreator.email,
+    totalEarnings: fullCreator.totalEarnings,
+  };
+  const result = await query(
+    `SELECT o.id AS "_id", o.id, o.buyer_id AS buyer, o.creator_id AS creator,
+      json_build_object('id', s.id, 'title', s.title) AS software,
+      o.amount::float8 AS amount, o.platform_fee::float8 AS "platformFee",
+      o.creator_earning::float8 AS "creatorEarning", o.razorpay_order_id AS "razorpayOrderId",
+      o.razorpay_payment_id AS "razorpayPaymentId", o.status, o.paid_at AS "paidAt",
+      o.access_expires_at AS "accessExpiresAt", o.created_at AS "createdAt"
+     FROM orders o JOIN software s ON s.id = o.software_id
+     WHERE o.creator_id = $1 AND o.status = 'paid' ORDER BY o.created_at DESC`,
+    [id]
+  );
+  const orders = result.rows;
   return sendSuccess(reply, { creator, orders });
 }
 
-export async function getAllOrders(req: FastifyRequest, reply: FastifyReply) {
-  const orders = await OrderModel.find()
-    .populate("buyer", "name email")
-    .populate("creator", "name email")
-    .populate("software", "title price");
-  return sendSuccess(reply, orders);
+export async function getAllOrders(_req: FastifyRequest, reply: FastifyReply) {
+  const result = await query(
+    `SELECT o.id AS "_id", o.id,
+      json_build_object('_id', b.id, 'id', b.id, 'name', b.name, 'email', b.email) AS buyer,
+      json_build_object('_id', c.id, 'id', c.id, 'name', c.name, 'email', c.email) AS creator,
+      json_build_object('_id', s.id, 'id', s.id, 'title', s.title, 'price', s.price) AS software,
+      o.amount::float8 AS amount, o.platform_fee::float8 AS "platformFee",
+      o.creator_earning::float8 AS "creatorEarning", o.razorpay_order_id AS "razorpayOrderId",
+      o.razorpay_payment_id AS "razorpayPaymentId", o.razorpay_signature AS "razorpaySignature",
+      o.status, o.paid_at AS "paidAt", o.access_expires_at AS "accessExpiresAt",
+      o.created_at AS "createdAt"
+     FROM orders o JOIN users b ON b.id = o.buyer_id
+     JOIN users c ON c.id = o.creator_id JOIN software s ON s.id = o.software_id
+     ORDER BY o.created_at DESC`
+  );
+  return sendSuccess(reply, result.rows);
 }
 
-export async function getContactSubmissions(req: FastifyRequest, reply: FastifyReply) {
-  const submissions = await ContactSubmissionModel.find().sort({ createdAt: -1 }).lean();
+export async function getContactSubmissions(_req: FastifyRequest, reply: FastifyReply) {
+  const submissions = await listContactSubmissions();
   return sendSuccess(reply, submissions.map((submission) => ({
     ...submission,
     status: submission.status || "new",
@@ -152,11 +187,7 @@ export async function updateContactSubmissionStatus(req: FastifyRequest, reply: 
   }).strict().safeParse(req.body);
   if (!parsed.success) return sendError(reply, "Invalid inquiry status", 400, parsed.error.flatten());
 
-  const submission = await ContactSubmissionModel.findByIdAndUpdate(
-    id,
-    { status: parsed.data.status },
-    { new: true, runValidators: true }
-  );
+  const submission = await saveContactSubmissionStatus(id, parsed.data.status);
   if (!submission) return sendError(reply, "Contact inquiry not found", 404);
   return sendSuccess(reply, submission, "Inquiry status updated");
 }
@@ -165,7 +196,7 @@ export async function deleteContactSubmission(req: FastifyRequest, reply: Fastif
   const { id } = req.params as { id: string };
   if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid inquiry id", 400);
 
-  const submission = await ContactSubmissionModel.findByIdAndDelete(id);
-  if (!submission) return sendError(reply, "Contact inquiry not found", 404);
+  const deleted = await removeContactSubmission(id);
+  if (!deleted) return sendError(reply, "Contact inquiry not found", 404);
   return sendSuccess(reply, { id }, "Inquiry deleted");
 }

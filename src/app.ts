@@ -7,8 +7,8 @@ import {
   connectInfrastructure,
   getInfrastructureStatus,
 } from "./config/infrastructure";
-import mongoose from "mongoose";
 import { ENV } from "./config/env";
+import { isDatabaseReady } from "./config/database";
 
 export async function buildApp() {
   const app = Fastify({
@@ -45,7 +45,7 @@ export async function buildApp() {
     app.get("/ready", async (_request, reply) => {
       const integrations = getInfrastructureStatus();
       const checks = {
-        database: mongoose.connection.readyState === 1,
+        database: isDatabaseReady(),
         redis: integrations.redis !== "disconnected",
         rabbitmq: integrations.rabbitmq !== "disconnected",
       };

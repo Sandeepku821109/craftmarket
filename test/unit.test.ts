@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { Types } from "mongoose";
 import { configureTestEnvironment } from "./testEnvironment";
 
 configureTestEnvironment();
@@ -74,72 +73,12 @@ test("Cloudinary PDF delivery URLs retain a .pdf extension", async () => {
   );
 });
 
-test("software schema enforces required listing fields and HTTPS demo URLs", async () => {
-  const { SoftwareModel } = await import("../src/models/Software.model");
-  const creator = new Types.ObjectId();
-  const valid = new SoftwareModel({
-    title: "Test listing",
-    description: "A test listing description long enough.",
-    creator,
-    images: ["one", "two"],
-    video: "demo",
-    liveDemoUrl: "https://example.test",
-    githubUsername: "test-user",
-    gitRepository: "test-user/test-repository",
-    languages: ["TypeScript"],
-    platformType: "backend",
-    price: 100,
-  });
-  assert.equal(valid.validateSync(), undefined);
-
-  const invalidUrl = new SoftwareModel({
-    ...valid.toObject(),
-    liveDemoUrl: "http://example.test",
-  });
-  assert.ok(invalidUrl.validateSync()?.errors.liveDemoUrl);
-
-  const missingImage = new SoftwareModel({
-    ...valid.toObject(),
-    images: ["one"],
-  });
-  assert.ok(missingImage.validateSync()?.errors.images);
-});
-
-test("contact submission schema validates and trims saved queries", async () => {
-  const { ContactSubmissionModel } = await import("../src/models/ContactSubmission.model");
-  const submission = new ContactSubmissionModel({
-    name: "  Alex Morgan  ",
-    phone: "+1 555 123 4567",
-    email: "ALEX@example.test",
-    subject: "General question",
-    query: "  I have a question about the marketplace.  ",
-  });
-  assert.equal(submission.validateSync(), undefined);
-  assert.equal(submission.name, "Alex Morgan");
-  assert.equal(submission.query, "I have a question about the marketplace.");
-  assert.equal(submission.status, "new");
-
-  submission.subject = "Invalid subject";
-  assert.ok(submission.validateSync()?.errors.subject);
-  submission.subject = "General question";
-  submission.set("status", "archived");
-  assert.ok(submission.validateSync()?.errors.status);
-});
-
-test("order schema restricts valid payment lifecycle states", async () => {
-  const { OrderModel } = await import("../src/models/Order.model");
-  const order = new OrderModel({
-    buyer: new Types.ObjectId(),
-    software: new Types.ObjectId(),
-    creator: new Types.ObjectId(),
-    amount: 100,
-    platformFee: 20,
-    creatorEarning: 80,
-    razorpayOrderId: "order_test",
-    status: "paid",
-  });
-  assert.equal(order.validateSync(), undefined);
-
-  order.set("status", "refunded");
-  assert.ok(order.validateSync()?.errors.status);
+test("PostgreSQL schema preserves marketplace constraints and lifecycle enums", async () => {
+  const { DATABASE_SCHEMA } = await import("../src/config/schema");
+  assert.match(DATABASE_SCHEMA, /email varchar\(254\) NOT NULL UNIQUE/);
+  assert.match(DATABASE_SCHEMA, /cardinality\(images\) >= 2/);
+  assert.match(DATABASE_SCHEMA, /platform_type IN \('frontend', 'backend', 'fullstack', 'mobile-app'\)/);
+  assert.match(DATABASE_SCHEMA, /status IN \('created', 'paid', 'failed'\)/);
+  assert.match(DATABASE_SCHEMA, /UNIQUE \(identifier, purpose\)/);
+  assert.match(DATABASE_SCHEMA, /status IN \('new', 'in-progress', 'resolved'\)/);
 });

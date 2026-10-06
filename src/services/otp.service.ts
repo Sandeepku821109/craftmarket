@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "crypto";
-import { OtpModel } from "../models/Otp.model";
+import { deleteOtp, findOtp, updateOtpAttempts, upsertOtp } from "../models/Otp.model";
 import { generateOtp, otpExpiry } from "../utils/otp.util";
 import { sendOtpEmail } from "./notification.service";
 
@@ -7,7 +7,7 @@ const RESEND_COOLDOWN_MS = 30_000;
 
 export async function createAndSendOtp(identifier: string, purpose: "signup" | "login") {
   const now = new Date();
-  const existing = await OtpModel.findOne({ identifier, purpose }).select("lastSentAt");
+  const existing = await findOtp(identifier, purpose);
   if (existing?.lastSentAt && now.getTime() - existing.lastSentAt.getTime() < RESEND_COOLDOWN_MS) {
     const retryAfter = Math.ceil(
       (RESEND_COOLDOWN_MS - (now.getTime() - existing.lastSentAt.getTime())) / 1000
@@ -19,16 +19,12 @@ export async function createAndSendOtp(identifier: string, purpose: "signup" | "
 
   const otp = generateOtp();
   const digest = hashOtp(otp);
-  await OtpModel.findOneAndUpdate(
-    { identifier, purpose },
-    { otp: digest, expiresAt: otpExpiry(5), attempts: 0, lastSentAt: now },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
+  await upsertOtp({ identifier, purpose, otp: digest, expiresAt: otpExpiry(5), attempts: 0, lastSentAt: now });
 
   try {
     await sendOtpEmail(identifier, otp);
   } catch (error) {
-    await OtpModel.deleteOne({ identifier, purpose, otp: digest });
+    await deleteOtp(identifier, purpose, digest);
     throw error;
   }
 
@@ -36,10 +32,10 @@ export async function createAndSendOtp(identifier: string, purpose: "signup" | "
 }
 
 export async function verifyOtp(identifier: string, otp: string, purpose: "signup" | "login") {
-  const record = await OtpModel.findOne({ identifier, purpose });
+  const record = await findOtp(identifier, purpose);
   if (!record) return false;
   if (record.expiresAt < new Date()) {
-    await record.deleteOne();
+    await deleteOtp(identifier, purpose);
     return false;
   }
 
@@ -50,18 +46,11 @@ export async function verifyOtp(identifier: string, otp: string, purpose: "signu
     timingSafeEqual(submittedDigest, storedDigest);
 
   if (valid) {
-    const result = await OtpModel.deleteOne({ _id: record._id, otp: record.otp });
-    return result.deletedCount === 1;
+    return deleteOtp(identifier, purpose, record.otp);
   }
 
-  const updated = await OtpModel.findByIdAndUpdate(
-    record._id,
-    { $inc: { attempts: 1 } },
-    { new: true }
-  );
-  if (updated && updated.attempts >= 5) {
-    await OtpModel.deleteOne({ _id: record._id });
-  }
+  const attempts = await updateOtpAttempts(record._id);
+  if (attempts !== null && attempts >= 5) await deleteOtp(identifier, purpose);
   return false;
 }
 
