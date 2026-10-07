@@ -42,6 +42,21 @@ export async function buildApp() {
       integrations: getInfrastructureStatus(),
     }));
 
+    app.get("/", async (_request, reply) => {
+      const integrations = getInfrastructureStatus();
+      const database = isDatabaseReady();
+      const ready = database
+        && integrations.redis !== "disconnected"
+        && integrations.rabbitmq !== "disconnected";
+      return reply.code(ready ? 200 : 503).send({
+        status: ready ? "ok" : "not_ready",
+        checks: {
+          database: database ? "connected" : "disconnected",
+          ...integrations,
+        },
+      });
+    });
+
     app.get("/ready", async (_request, reply) => {
       const integrations = getInfrastructureStatus();
       const checks = {

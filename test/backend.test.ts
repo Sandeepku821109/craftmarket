@@ -26,6 +26,17 @@ test("health endpoint reports the process is alive and sends security headers", 
   assert.equal(response.headers["referrer-policy"], "no-referrer");
 });
 
+test("root endpoint reports backend readiness and every dependency condition", async () => {
+  const response = await app.inject({ method: "GET", url: "/" });
+  const body = response.json();
+  assert.equal(response.statusCode, 503);
+  assert.equal(body.status, "not_ready");
+  assert.deepEqual(Object.keys(body.checks).sort(), ["database", "rabbitmq", "redis"]);
+  assert.equal(body.checks.database, "disconnected");
+  assert.equal(body.checks.redis, "disabled");
+  assert.equal(body.checks.rabbitmq, "disabled");
+});
+
 test("readiness fails until the required PostgreSQL connection is established", async () => {
   const response = await app.inject({ method: "GET", url: "/ready" });
   assert.equal(response.statusCode, 503);
