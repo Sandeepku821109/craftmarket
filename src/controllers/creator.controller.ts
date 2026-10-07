@@ -1,15 +1,19 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { sendSuccess, sendError } from "../utils/apiResponse";
+import { query } from "../config/database";
 import { uploadToCloudinary } from "../services/upload.service";
 import { createSoftware } from "../services/software.service";
 import {
   addUploadedSoftware,
+  getCreatorPayoutDetails,
   findUserById,
+  saveCreatorPayoutDetails,
 } from "../models/User.model";
 import {
   deleteOwnedSoftware,
   findOwnedSoftware,
   listSoftwareByCreator,
+  replaceOwnedSoftwarePdf,
   updateSoftwareListing,
 } from "../models/Software.model";
 import { verifyPublicGitHubRepository } from "../services/github.service";
@@ -21,6 +25,7 @@ export async function uploadSoftware(req: FastifyRequest, reply: FastifyReply) {
   const images: string[] = [];
   let video = "";
   let pdfDocument: string | undefined;
+  let projectArchive: string | undefined;
   const fields = Object.create(null) as Record<string, string>;
 
   for await (const part of parts) {
@@ -34,7 +39,10 @@ export async function uploadSoftware(req: FastifyRequest, reply: FastifyReply) {
         video = await uploadToCloudinary(part, "video");
       } else if (part.fieldname === "pdf") {
         if (pdfDocument) return sendError(reply, "Only one PDF is allowed", 400);
-        pdfDocument = await uploadToCloudinary(part, "pdf");
+        pdfDocument = await uploadToCloudinary(part, "raw");
+      } else if (part.fieldname === "projectArchive") {
+        if (projectArchive) return sendError(reply, "Only one project archive is allowed", 400);
+        projectArchive = await uploadToCloudinary(part, "zip");
       } else {
         return sendError(reply, `Unexpected file field: ${part.fieldname}`, 400);
       }
@@ -48,6 +56,13 @@ export async function uploadSoftware(req: FastifyRequest, reply: FastifyReply) {
         return sendError(reply, `Duplicate field: ${part.fieldname}`, 400);
       }
     }
+  }
+
+  if (!projectArchive) {
+    return sendError(reply, "A project folder ZIP archive is required", 400);
+  }
+  if (!pdfDocument) {
+    return sendError(reply, "A product guide PDF is required", 400);
   }
 
   const parsed = z.object({
@@ -83,6 +98,7 @@ export async function uploadSoftware(req: FastifyRequest, reply: FastifyReply) {
     video,
     liveDemoUrl: parsed.data.liveDemoUrl,
     pdfDocument,
+    projectArchive,
     githubUsername: parsed.data.githubUsername,
     gitRepository: verifiedRepository,
     languages,
@@ -103,7 +119,43 @@ export async function getMySoftware(req: FastifyRequest, reply: FastifyReply) {
 export async function getMyEarnings(req: FastifyRequest, reply: FastifyReply) {
   const user = await findUserById(req.user!.id);
   const software = await listSoftwareByCreator(req.user!.id);
-  return sendSuccess(reply, { totalEarnings: user?.totalEarnings, software });
+  const payoutSummary = await queryCreatorPayoutSummary(req.user!.id);
+  return sendSuccess(reply, { totalEarnings: user?.totalEarnings, software, ...payoutSummary });
+}
+
+async function queryCreatorPayoutSummary(creatorId: string) {
+  const result = await query<{ pendingPayout: number; paidOut: number }>(
+    `SELECT COALESCE(sum(creator_earning) FILTER (WHERE creator_payout_status = 'pending'), 0)::float8 AS "pendingPayout",
+      COALESCE(sum(creator_earning) FILTER (WHERE creator_payout_status = 'paid'), 0)::float8 AS "paidOut"
+     FROM orders WHERE creator_id = $1 AND status = 'paid'`,
+    [creatorId]
+  );
+  return result.rows[0];
+}
+
+export async function getMyPayoutDetails(req: FastifyRequest, reply: FastifyReply) {
+  const details = await getCreatorPayoutDetails(req.user!.id);
+  if (!details) return sendError(reply, "Creator account not found", 404);
+  return sendSuccess(reply, details);
+}
+
+export async function updateMyPayoutDetails(req: FastifyRequest, reply: FastifyReply) {
+  const parsed = z.discriminatedUnion("payoutMethod", [
+    z.object({
+      payoutMethod: z.literal("paypal"),
+      paypalEmail: z.string().trim().email().max(254),
+    }).strict(),
+    z.object({
+      payoutMethod: z.literal("upi"),
+      upiId: z.string().trim().min(3).max(255)
+        .regex(/^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+$/, "Enter a valid UPI ID"),
+    }).strict(),
+  ]).safeParse(req.body);
+  if (!parsed.success) return sendError(reply, "Enter a valid PayPal email or UPI ID", 400, parsed.error.flatten());
+
+  const details = await saveCreatorPayoutDetails(req.user!.id, parsed.data);
+  if (!details) return sendError(reply, "Creator account not found", 404);
+  return sendSuccess(reply, details, "Payout details saved");
 }
 
 export async function updateSoftware(req: FastifyRequest, reply: FastifyReply) {
@@ -132,6 +184,27 @@ export async function updateSoftware(req: FastifyRequest, reply: FastifyReply) {
   if (!updated) return sendError(reply, "Software not found", 404);
 
   return sendSuccess(reply, updated, "Updated successfully");
+}
+
+export async function replaceSoftwarePdf(req: FastifyRequest, reply: FastifyReply) {
+  const { id } = req.params as { id: string };
+  if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid software id", 400);
+  const software = await findOwnedSoftware(id, req.user!.id);
+  if (!software) return sendError(reply, "Software not found", 404);
+
+  let pdfDocument: string | undefined;
+  for await (const part of req.parts()) {
+    if (part.type !== "file" || part.fieldname !== "pdf") {
+      return sendError(reply, "Upload exactly one PDF file using the pdf field", 400);
+    }
+    if (pdfDocument) return sendError(reply, "Only one PDF is allowed", 400);
+    pdfDocument = await uploadToCloudinary(part, "raw");
+  }
+  if (!pdfDocument) return sendError(reply, "Select a PDF file to replace the product guide", 400);
+
+  const updated = await replaceOwnedSoftwarePdf(id, req.user!.id, pdfDocument);
+  if (!updated) return sendError(reply, "Software not found", 404);
+  return sendSuccess(reply, updated, "Product guide replaced and listing sent for review");
 }
 
 export async function deleteSoftware(req: FastifyRequest, reply: FastifyReply) {

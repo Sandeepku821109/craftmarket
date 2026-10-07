@@ -13,6 +13,7 @@ export interface CreateSoftwareData {
   video: string;
   liveDemoUrl: string;
   pdfDocument?: string;
+  projectArchive?: string;
   githubUsername: string;
   gitRepository: string;
   languages: string[];

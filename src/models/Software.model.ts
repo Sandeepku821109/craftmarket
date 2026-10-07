@@ -13,6 +13,7 @@ export interface ISoftware {
   video: string;
   liveDemoUrl?: string;
   pdfDocument?: string;
+  projectArchive?: string;
   githubUsername: string;
   gitRepository: string;
   languages: string[];
@@ -32,6 +33,7 @@ export interface CreateSoftwareInput {
   video: string;
   liveDemoUrl: string;
   pdfDocument?: string;
+  projectArchive?: string;
   githubUsername: string;
   gitRepository: string;
   languages: string[];
@@ -41,27 +43,35 @@ export interface CreateSoftwareInput {
 
 export const SOFTWARE_FIELDS = `id AS "_id", id, title, description, creator_id AS creator,
   images, video, live_demo_url AS "liveDemoUrl", pdf_document AS "pdfDocument",
+  project_archive AS "projectArchive",
   github_username AS "githubUsername", git_repository AS "gitRepository", languages,
   platform_type AS "platformType", price::float8 AS price, status, total_sales AS "totalSales",
   total_revenue::float8 AS "totalRevenue", created_at AS "createdAt"`;
 const SOFTWARE_JOIN_FIELDS = `s.id AS "_id", s.id, s.title, s.description,
   s.creator_id AS creator, s.images, s.video, s.live_demo_url AS "liveDemoUrl",
-  s.pdf_document AS "pdfDocument", s.github_username AS "githubUsername",
+  s.pdf_document AS "pdfDocument", s.project_archive IS NOT NULL AS "projectArchiveAvailable",
+  s.github_username AS "githubUsername",
   s.git_repository AS "gitRepository", s.languages, s.platform_type AS "platformType",
+  s.price::float8 AS price, s.status, s.total_sales AS "totalSales",
+  s.total_revenue::float8 AS "totalRevenue", s.created_at AS "createdAt"`;
+export const PUBLIC_SOFTWARE_JOIN_FIELDS = `s.id AS "_id", s.id, s.title, s.description,
+  json_build_object('_id', u.id, 'id', u.id, 'name', u.name, 'avatar', u.avatar) AS creator,
+  s.images, s.video, s.live_demo_url AS "liveDemoUrl",
+  s.github_username AS "githubUsername", s.languages, s.platform_type AS "platformType",
   s.price::float8 AS price, s.status, s.total_sales AS "totalSales",
   s.total_revenue::float8 AS "totalRevenue", s.created_at AS "createdAt"`;
 
 export async function createSoftware(data: CreateSoftwareInput): Promise<ISoftware> {
   const result = await query<ISoftware>(
     `INSERT INTO software
-      (title, description, creator_id, images, video, live_demo_url, pdf_document,
+      (title, description, creator_id, images, video, live_demo_url, pdf_document, project_archive,
        github_username, git_repository, languages, platform_type, price)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      RETURNING ${SOFTWARE_FIELDS}`,
     [
       data.title, data.description, data.creator, data.images, data.video, data.liveDemoUrl,
-      data.pdfDocument ?? null, data.githubUsername, data.gitRepository, data.languages,
-      data.platformType, data.price,
+      data.pdfDocument ?? null, data.projectArchive ?? null, data.githubUsername,
+      data.gitRepository, data.languages, data.platformType, data.price,
     ]
   );
   return result.rows[0];
@@ -85,7 +95,7 @@ export async function findOwnedSoftware(id: string, creatorId: string): Promise<
 
 export async function findPublicSoftwareById(id: string): Promise<ISoftware | null> {
   const result = await query<ISoftware>(
-    `SELECT ${SOFTWARE_JOIN_FIELDS.replace("s.creator_id AS creator", "json_build_object('_id', u.id, 'id', u.id, 'name', u.name, 'avatar', u.avatar) AS creator")}
+    `SELECT ${PUBLIC_SOFTWARE_JOIN_FIELDS}
      FROM software s JOIN users u ON u.id = s.creator_id
      WHERE s.id = $1 AND s.status = 'approved'`,
     [id]
@@ -108,6 +118,19 @@ export async function updateSoftwareListing(
     `UPDATE software SET ${setters.join(", ")}, status = 'pending', updated_at = now()
      WHERE id = $1 AND creator_id = $2 RETURNING ${SOFTWARE_FIELDS}`,
     [id, creatorId, ...values]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function replaceOwnedSoftwarePdf(
+  id: string,
+  creatorId: string,
+  pdfDocument: string
+): Promise<ISoftware | null> {
+  const result = await query<ISoftware>(
+    `UPDATE software SET pdf_document = $3, status = 'pending', updated_at = now()
+     WHERE id = $1 AND creator_id = $2 RETURNING ${SOFTWARE_FIELDS}`,
+    [id, creatorId, pdfDocument]
   );
   return result.rows[0] ?? null;
 }
@@ -203,9 +226,7 @@ export async function searchSoftwareListings(options: {
   const count = await query<{ count: string }>(`SELECT count(*) FROM software s WHERE ${where}`, values);
   const pageValues = [...values, options.limit, (options.page - 1) * options.limit];
   const itemResult = await query<ISoftware>(
-    `SELECT ${SOFTWARE_JOIN_FIELDS
-      .replace("s.creator_id AS creator", "json_build_object('_id', u.id, 'id', u.id, 'name', u.name, 'avatar', u.avatar) AS creator")
-      .replace(', s.git_repository AS "gitRepository"', "")}
+    `SELECT ${PUBLIC_SOFTWARE_JOIN_FIELDS}
      FROM software s JOIN users u ON u.id = s.creator_id
      WHERE ${where} ORDER BY s.created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
     pageValues

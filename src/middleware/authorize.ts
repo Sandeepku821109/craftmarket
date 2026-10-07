@@ -5,5 +5,6 @@ export function authorize(...allowedRoles: string[]) {
     if (!req.user || !allowedRoles.includes(req.user.role)) {
       return reply.code(403).send({ success: false, message: "Access denied" });
     }
+
   };
 }

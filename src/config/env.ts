@@ -166,6 +166,6 @@ export const ENV = {
   SMTP_PASS: required("SMTP_PASS"),
   CONTACT_EMAIL: optionalEmail("CONTACT_EMAIL"),
 
-  PLATFORM_COMMISSION_PERCENT: 20, // admin cut %
+  PLATFORM_COMMISSION_PERCENT: 30, // creator receives the remaining 70%
   COOKIE_DOMAIN,
 };

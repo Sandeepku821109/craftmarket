@@ -40,6 +40,17 @@ test("payment signature verification accepts only the matching HMAC", async () =
   assert.equal(verifyRazorpaySignature("another-order", paymentId, signature), false);
 });
 
+test("new sale split reserves 70 percent for creator payout", async () => {
+  const { ENV } = await import("../src/config/env");
+  const { splitOrderAmount } = await import("../src/services/payment.service");
+
+  assert.equal(ENV.PLATFORM_COMMISSION_PERCENT, 30);
+  assert.deepEqual(splitOrderAmount(100_00), {
+    platformFeeInPaise: 30_00,
+    creatorEarningInPaise: 70_00,
+  });
+});
+
 test("project access expires six calendar months after payment", async () => {
   const { addCalendarMonths, getPurchaseAccessExpiry } = await import("../src/services/payment.service");
 
@@ -61,7 +72,7 @@ test("project access expires six calendar months after payment", async () => {
 });
 
 test("Cloudinary PDF delivery URLs retain a .pdf extension", async () => {
-  const { ensurePdfExtension } = await import("../src/services/upload.service");
+  const { ensurePdfExtension, ensureZipExtension } = await import("../src/services/upload.service");
 
   assert.equal(
     ensurePdfExtension("https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/guide?x=1"),
@@ -71,14 +82,56 @@ test("Cloudinary PDF delivery URLs retain a .pdf extension", async () => {
     ensurePdfExtension("https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/guide.pdf"),
     "https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/guide.pdf",
   );
+  assert.equal(
+    ensurePdfExtension("https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/guide"),
+    "https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/guide.pdf",
+  );
+  assert.equal(
+    ensureZipExtension("https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/project"),
+    "https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/project.zip",
+  );
+  assert.equal(
+    ensureZipExtension("https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/project.zip"),
+    "https://res.cloudinary.com/example/raw/upload/v123/software-marketplace/project.zip",
+  );
+});
+
+test("GitHub repository archive fallback accepts only the saved public owner repository URL", async () => {
+  const { validateGitHubRepositoryUrl } = await import("../src/services/github.service");
+  assert.deepEqual(
+    validateGitHubRepositoryUrl("https://github.com/example/project", "example"),
+    {
+      owner: "example",
+      repository: "project",
+      canonicalUrl: "https://github.com/example/project",
+    }
+  );
+  assert.throws(
+    () => validateGitHubRepositoryUrl("https://example.com/example/project", "example"),
+    /GitHub repository URL/
+  );
 });
 
 test("PostgreSQL schema preserves marketplace constraints and lifecycle enums", async () => {
   const { DATABASE_SCHEMA } = await import("../src/config/schema");
   assert.match(DATABASE_SCHEMA, /email varchar\(254\) NOT NULL UNIQUE/);
   assert.match(DATABASE_SCHEMA, /cardinality\(images\) >= 2/);
+  assert.match(DATABASE_SCHEMA, /project_archive text/);
+  assert.match(DATABASE_SCHEMA, /ADD COLUMN IF NOT EXISTS project_archive text/);
   assert.match(DATABASE_SCHEMA, /platform_type IN \('frontend', 'backend', 'fullstack', 'mobile-app'\)/);
   assert.match(DATABASE_SCHEMA, /status IN \('created', 'paid', 'failed'\)/);
+  assert.match(DATABASE_SCHEMA, /creator_payout_status text NOT NULL DEFAULT 'pending'/);
+  assert.match(DATABASE_SCHEMA, /ADD COLUMN IF NOT EXISTS payout_method/);
+  assert.match(DATABASE_SCHEMA, /ADD COLUMN IF NOT EXISTS creator_payout_reference/);
+  assert.match(DATABASE_SCHEMA, /users_payout_method_check/);
+  assert.match(DATABASE_SCHEMA, /orders_creator_payout_status_check/);
   assert.match(DATABASE_SCHEMA, /UNIQUE \(identifier, purpose\)/);
   assert.match(DATABASE_SCHEMA, /status IN \('new', 'in-progress', 'resolved'\)/);
+});
+
+test("public marketplace software projection never exposes uploaded file URLs or private repositories", async () => {
+  const { PUBLIC_SOFTWARE_JOIN_FIELDS } = await import("../src/models/Software.model");
+  assert.doesNotMatch(PUBLIC_SOFTWARE_JOIN_FIELDS, /pdf_document|pdfDocument/i);
+  assert.doesNotMatch(PUBLIC_SOFTWARE_JOIN_FIELDS, /project_archive|projectArchive/i);
+  assert.doesNotMatch(PUBLIC_SOFTWARE_JOIN_FIELDS, /git_repository|gitRepository/i);
 });

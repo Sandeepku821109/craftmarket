@@ -25,7 +25,7 @@ test("PostgreSQL persists user records and enforces unique email indexes", {
   skip: !databaseUrl && "Set DATABASE_TEST_URL to an isolated PostgreSQL test database",
 }, async () => {
   const { connectDB, closeDatabase, query } = await import("../src/config/database");
-  const { createUser, findUserById } = await import("../src/models/User.model");
+  const { createUser, findUserById, findUserByIdentifier } = await import("../src/models/User.model");
   const unique = randomUUID();
   const email = `integration-${unique}@example.invalid`;
   const mobile = `+1555${Date.now().toString().slice(-7)}`;
@@ -43,6 +43,9 @@ test("PostgreSQL persists user records and enforces unique email indexes", {
     const fetched = await findUserById(created._id);
     assert.equal(fetched?.email, email);
     assert.equal(fetched?.role, "buyer");
+    await query("UPDATE users SET role = 'creator' WHERE id = $1", [created._id]);
+    const loggedInUser = await findUserByIdentifier(email);
+    assert.equal(loggedInUser?.role, "creator");
     await assert.rejects(
       createUser({
         name: "Duplicate Email Test",

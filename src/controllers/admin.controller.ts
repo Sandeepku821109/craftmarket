@@ -1,7 +1,6 @@
-import { Readable } from "node:stream";
 import { FastifyRequest, FastifyReply } from "fastify";
 import { sendSuccess, sendError } from "../utils/apiResponse";
-import { countUsers, findUserById, listUsers } from "../models/User.model";
+import { countUsers, findUserById, listUsers, updateMemberRole } from "../models/User.model";
 import {
   countSoftware,
   findSoftwareById,
@@ -17,6 +16,7 @@ import {
 import { countPaidOrders, paidOrderRevenue } from "../models/Order.model";
 import { query } from "../config/database";
 import { z } from "zod";
+import { streamCloudinaryArchive, streamCloudinaryPdf } from "../services/pdf.service";
 
 export async function getDashboardStats(_req: FastifyRequest, reply: FastifyReply) {
   const [totalUsers, totalCreators, totalBuyers, totalSoftware, totalOrders, revenue] =
@@ -45,6 +45,22 @@ export async function getAllUsers(_req: FastifyRequest, reply: FastifyReply) {
   return sendSuccess(reply, users);
 }
 
+export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
+  const { id } = req.params as { id: string };
+  if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid user id", 400);
+  if (id === req.user!.id) return sendError(reply, "You cannot change your own administrator role", 403);
+
+  const parsed = z.object({ role: z.enum(["buyer", "creator"]) }).strict().safeParse(req.body);
+  if (!parsed.success) return sendError(reply, "Role must be buyer or creator", 400, parsed.error.flatten());
+
+  const user = await updateMemberRole(id, parsed.data.role, req.user!.id);
+  if (user) return sendSuccess(reply, user, "User role updated");
+
+  const existing = await findUserById(id);
+  if (!existing) return sendError(reply, "User not found", 404);
+  return sendError(reply, "Administrator roles cannot be changed here", 403);
+}
+
 export async function getAllSoftware(_req: FastifyRequest, reply: FastifyReply) {
   const software = await listSoftwareForAdmin();
   return sendSuccess(reply, software);
@@ -57,60 +73,17 @@ export async function getSoftwarePdf(req: FastifyRequest, reply: FastifyReply) {
   const software = await findSoftwareById(id);
   if (!software?.pdfDocument) return sendError(reply, "Product PDF not found", 404);
 
-  let pdfUrl: URL;
-  try {
-    pdfUrl = new URL(software.pdfDocument);
-  } catch {
-    return sendError(reply, "Product PDF URL is invalid", 502);
-  }
+  return streamCloudinaryPdf(req, reply, software.pdfDocument, id);
+}
 
-  const cloudName = encodeURIComponent(ENV.CLOUDINARY_CLOUD_NAME);
-  const cloudinaryPath = new RegExp(`^/${cloudName}/(?:raw|image)/upload/`);
-  if (
-    pdfUrl.protocol !== "https:" ||
-    pdfUrl.hostname !== "res.cloudinary.com" ||
-    pdfUrl.username ||
-    pdfUrl.password ||
-    !cloudinaryPath.test(pdfUrl.pathname)
-  ) {
-    return sendError(reply, "Product PDF URL is not a valid Cloudinary asset", 502);
-  }
+export async function getSoftwareArchive(req: FastifyRequest, reply: FastifyReply) {
+  const { id } = req.params as { id: string };
+  if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid software id", 400);
 
-  const requestHeaders: HeadersInit = {};
-  if (typeof req.headers.range === "string") {
-    requestHeaders.Range = req.headers.range;
-  }
-  const upstream = await fetch(pdfUrl, { headers: requestHeaders });
-  const body = upstream.body;
-  if ((upstream.status !== 200 && upstream.status !== 206) || !body) {
-    return sendError(reply, "Cloudinary could not load the product PDF", 502);
-  }
+  const software = await findSoftwareById(id);
+  if (!software?.projectArchive) return sendError(reply, "Project archive not found", 404);
 
-  reply
-    .code(upstream.status)
-    .header("content-type", "application/pdf")
-    .header("content-disposition", `inline; filename="${id}.pdf"`)
-    .header("accept-ranges", "bytes")
-    .header("cache-control", "private, no-store")
-    .header("content-security-policy", `frame-ancestors ${ENV.CORS_ORIGINS.join(" ")}`);
-  const contentLength = upstream.headers.get("content-length");
-  const contentRange = upstream.headers.get("content-range");
-  if (contentLength) reply.header("content-length", contentLength);
-  if (contentRange) reply.header("content-range", contentRange);
-
-  const pdfStream = Readable.from((async function* () {
-    const reader = body.getReader();
-    try {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) return;
-        yield chunk.value;
-      }
-    } finally {
-      reader.releaseLock();
-    }
-  })());
-  return reply.send(pdfStream);
+  return streamCloudinaryArchive(req, reply, software.projectArchive, `${id}-project`);
 }
 
 export async function approveSoftware(req: FastifyRequest, reply: FastifyReply) {
@@ -156,18 +129,65 @@ export async function getAllOrders(_req: FastifyRequest, reply: FastifyReply) {
   const result = await query(
     `SELECT o.id AS "_id", o.id,
       json_build_object('_id', b.id, 'id', b.id, 'name', b.name, 'email', b.email) AS buyer,
-      json_build_object('_id', c.id, 'id', c.id, 'name', c.name, 'email', c.email) AS creator,
+      json_build_object('_id', c.id, 'id', c.id, 'name', c.name, 'email', c.email,
+        'payoutMethod', c.payout_method, 'paypalEmail', c.paypal_email, 'upiId', c.upi_id) AS creator,
       json_build_object('_id', s.id, 'id', s.id, 'title', s.title, 'price', s.price) AS software,
       o.amount::float8 AS amount, o.platform_fee::float8 AS "platformFee",
       o.creator_earning::float8 AS "creatorEarning", o.razorpay_order_id AS "razorpayOrderId",
       o.razorpay_payment_id AS "razorpayPaymentId", o.razorpay_signature AS "razorpaySignature",
       o.status, o.paid_at AS "paidAt", o.access_expires_at AS "accessExpiresAt",
+      o.creator_payout_status AS "creatorPayoutStatus",
+      o.creator_payout_reference AS "creatorPayoutReference",
+      o.creator_payout_at AS "creatorPayoutAt",
       o.created_at AS "createdAt"
      FROM orders o JOIN users b ON b.id = o.buyer_id
      JOIN users c ON c.id = o.creator_id JOIN software s ON s.id = o.software_id
      ORDER BY o.created_at DESC`
   );
   return sendSuccess(reply, result.rows);
+}
+
+export async function markCreatorPayoutPaid(req: FastifyRequest, reply: FastifyReply) {
+  const { id } = req.params as { id: string };
+  if (!/^[a-f\d]{24}$/i.test(id)) return sendError(reply, "Invalid order id", 400);
+  const parsed = z.object({
+    reference: z.string().trim().min(1).max(200),
+  }).strict().safeParse(req.body);
+  if (!parsed.success) return sendError(reply, "A payout transfer reference is required", 400);
+
+  const updated = await query(
+    `UPDATE orders o
+     SET creator_payout_status = 'paid', creator_payout_reference = $2,
+         creator_payout_at = now(), updated_at = now()
+     FROM users c
+     WHERE o.id = $1 AND o.creator_id = c.id AND o.status = 'paid'
+       AND o.creator_payout_status = 'pending'
+       AND ((c.payout_method = 'paypal' AND c.paypal_email IS NOT NULL)
+         OR (c.payout_method = 'upi' AND c.upi_id IS NOT NULL))
+     RETURNING o.id AS "_id", o.creator_payout_status AS "creatorPayoutStatus",
+       o.creator_payout_reference AS "creatorPayoutReference",
+       o.creator_payout_at AS "creatorPayoutAt"`,
+    [id, parsed.data.reference]
+  );
+  if (updated.rows[0]) return sendSuccess(reply, updated.rows[0], "Creator payout recorded");
+
+  const existing = await query<{
+    status: string;
+    creatorPayoutStatus: string;
+    hasPayoutDetails: boolean;
+  }>(
+    `SELECT o.status, o.creator_payout_status AS "creatorPayoutStatus",
+       ((c.payout_method = 'paypal' AND c.paypal_email IS NOT NULL)
+         OR (c.payout_method = 'upi' AND c.upi_id IS NOT NULL)) AS "hasPayoutDetails"
+     FROM orders o JOIN users c ON c.id = o.creator_id WHERE o.id = $1`,
+    [id]
+  );
+  const order = existing.rows[0];
+  if (!order) return sendError(reply, "Order not found", 404);
+  if (order.status !== "paid") return sendError(reply, "Only completed customer payments can be paid out", 409);
+  if (order.creatorPayoutStatus === "paid") return sendError(reply, "Creator payout has already been recorded", 409);
+  if (!order.hasPayoutDetails) return sendError(reply, "Creator has not saved valid payout details", 409);
+  return sendError(reply, "Could not record creator payout", 409);
 }
 
 export async function getContactSubmissions(_req: FastifyRequest, reply: FastifyReply) {

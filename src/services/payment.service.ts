@@ -12,6 +12,16 @@ function serviceError(statusCode: number, message: string): Error & { statusCode
 
 const PURCHASE_ACCESS_MONTHS = 6;
 
+export function splitOrderAmount(amountInPaise: number) {
+  const platformFeeInPaise = Math.round(
+    (amountInPaise * ENV.PLATFORM_COMMISSION_PERCENT) / 100
+  );
+  return {
+    platformFeeInPaise,
+    creatorEarningInPaise: amountInPaise - platformFeeInPaise,
+  };
+}
+
 export function addCalendarMonths(date: Date, months: number): Date {
   const result = new Date(date);
   const originalDay = result.getUTCDate();
@@ -62,11 +72,9 @@ export async function createRazorpayOrder(softwareId: string, buyerId: string) {
     receipt: `rcpt_${Date.now()}`,
   });
 
-  const platformFeeInPaise = Math.round(
-    (amountInPaise * ENV.PLATFORM_COMMISSION_PERCENT) / 100
-  );
+  const { platformFeeInPaise, creatorEarningInPaise } = splitOrderAmount(amountInPaise);
   const platformFee = platformFeeInPaise / 100;
-  const creatorEarning = (amountInPaise - platformFeeInPaise) / 100;
+  const creatorEarning = creatorEarningInPaise / 100;
 
   const order = await createOrder({
     buyer: buyerId,

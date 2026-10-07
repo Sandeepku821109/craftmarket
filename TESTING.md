@@ -43,6 +43,9 @@ locally and run `npm --prefix backend run migrate:neon`; verify the reported
 record totals before switching traffic. The migration preserves existing
 24-character document IDs and skips rows already imported.
 
+Product PDFs, images, and videos are uploaded to Cloudinary. Admin PDF previews
+stream through the authenticated backend endpoint.
+
 The local load test defaults to 10 workers for 10 seconds. It is capped at 50
 workers and 60 seconds and does not exercise database-backed endpoints or
 external providers. For example:

@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
   uploaded_software text[] NOT NULL DEFAULT '{}',
   purchased_software text[] NOT NULL DEFAULT '{}',
   total_earnings numeric NOT NULL DEFAULT 0,
+  payout_method text,
+  paypal_email varchar(254),
+  upi_id varchar(255),
   refresh_token text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -24,6 +27,7 @@ CREATE TABLE IF NOT EXISTS software (
   video text NOT NULL,
   live_demo_url text CHECK (live_demo_url IS NULL OR live_demo_url LIKE 'https://%'),
   pdf_document text,
+  project_archive text,
   github_username text NOT NULL,
   git_repository text NOT NULL,
   languages text[] NOT NULL DEFAULT '{}',
@@ -50,9 +54,32 @@ CREATE TABLE IF NOT EXISTS orders (
   status text NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paid', 'failed')),
   paid_at timestamptz,
   access_expires_at timestamptz,
+  creator_payout_status text NOT NULL DEFAULT 'pending' CHECK (creator_payout_status IN ('pending', 'paid')),
+  creator_payout_reference varchar(200),
+  creator_payout_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS payout_method text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS paypal_email varchar(254);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS upi_id varchar(255);
+ALTER TABLE software ADD COLUMN IF NOT EXISTS project_archive text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS creator_payout_status text NOT NULL DEFAULT 'pending';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS creator_payout_reference varchar(200);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS creator_payout_at timestamptz;
+DO $$
+BEGIN
+  ALTER TABLE users ADD CONSTRAINT users_payout_method_check
+    CHECK (payout_method IS NULL OR payout_method IN ('paypal', 'upi'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$
+BEGIN
+  ALTER TABLE orders ADD CONSTRAINT orders_creator_payout_status_check
+    CHECK (creator_payout_status IN ('pending', 'paid'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS earnings (
   id varchar(24) PRIMARY KEY DEFAULT substr(md5(random()::text || clock_timestamp()::text), 1, 24),

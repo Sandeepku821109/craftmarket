@@ -60,6 +60,32 @@ test("invalid signup input is rejected before database or email access", async (
   assert.equal(response.json().success, false);
 });
 
+test("signup rejects unsupported account roles before database or email access", async () => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup/verify-otp",
+    payload: {
+      email: "new-user@example.test",
+      otp: "123456",
+      name: "New User",
+      mobile: "+15551234567",
+      role: "admin",
+    },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().message, "Invalid signup details");
+});
+
+test("login rejects malformed credentials before database access", async () => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/auth/login/verify-otp",
+    payload: { identifier: "", otp: "123" },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().message, "Invalid login details");
+});
+
 test("invalid browsing parameters are rejected before database access", async () => {
   const response = await app.inject({
     method: "GET",
@@ -70,11 +96,14 @@ test("invalid browsing parameters are rejected before database access", async ()
 });
 
 test("buyer purchase routes require authentication", async () => {
-  const response = await app.inject({
-    method: "GET",
-    url: "/api/buyer/purchases",
-  });
-  assert.equal(response.statusCode, 401);
+  const [purchases, pdf, projectArchive] = await Promise.all([
+    app.inject({ method: "GET", url: "/api/buyer/purchases" }),
+    app.inject({ method: "GET", url: "/api/buyer/purchases/507f1f77bcf86cd799439011/pdf" }),
+    app.inject({ method: "GET", url: "/api/buyer/purchases/507f1f77bcf86cd799439011/project-archive" }),
+  ]);
+  assert.equal(purchases.statusCode, 401);
+  assert.equal(pdf.statusCode, 401);
+  assert.equal(projectArchive.statusCode, 401);
 });
 
 test("admin product PDF streaming route requires authentication", async () => {
@@ -85,12 +114,59 @@ test("admin product PDF streaming route requires authentication", async () => {
   assert.equal(response.statusCode, 401);
 });
 
+test("admin project archive streaming route requires authentication", async () => {
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/admin/software/507f1f77bcf86cd799439011/project-archive",
+  });
+  assert.equal(response.statusCode, 401);
+});
+
 test("admin contact inquiries route requires authentication", async () => {
   const response = await app.inject({
     method: "GET",
     url: "/api/admin/contact-submissions",
   });
   assert.equal(response.statusCode, 401);
+});
+
+test("admin user-role changes require authentication", async () => {
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/api/admin/users/507f1f77bcf86cd799439011/role",
+    payload: { role: "creator" },
+  });
+  assert.equal(response.statusCode, 401);
+});
+
+test("admin cannot assign administrator role through member role change", async () => {
+  const { generateAccessToken } = await import("../src/utils/jwt.util");
+  const token = generateAccessToken({
+    id: "607f1f77bcf86cd799439011",
+    role: "admin",
+  });
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/api/admin/users/507f1f77bcf86cd799439011/role",
+    headers: { cookie: `accessToken=${token}` },
+    payload: { role: "admin" },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().message, "Role must be buyer or creator");
+});
+
+test("administrator cannot change their own role", async () => {
+  const { generateAccessToken } = await import("../src/utils/jwt.util");
+  const adminId = "507f1f77bcf86cd799439011";
+  const token = generateAccessToken({ id: adminId, role: "admin" });
+  const response = await app.inject({
+    method: "PATCH",
+    url: `/api/admin/users/${adminId}/role`,
+    headers: { cookie: `accessToken=${token}` },
+    payload: { role: "buyer" },
+  });
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().message, "You cannot change your own administrator role");
 });
 
 test("admin inquiry mutations require authentication", async () => {
@@ -155,6 +231,95 @@ test("creator routes reject an authenticated buyer", async () => {
   assert.equal(response.json().message, "Access denied");
 });
 
+test("creator product guide replacement requires authentication and validates the listing id", async () => {
+  const unauthenticated = await app.inject({
+    method: "PUT",
+    url: "/api/creator/software/507f1f77bcf86cd799439011/pdf",
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const { generateAccessToken } = await import("../src/utils/jwt.util");
+  const token = generateAccessToken({
+    id: "507f1f77bcf86cd799439011",
+    role: "creator",
+  });
+  const invalidId = await app.inject({
+    method: "PUT",
+    url: "/api/creator/software/not-an-id/pdf",
+    headers: { cookie: `accessToken=${token}` },
+  });
+  assert.equal(invalidId.statusCode, 400);
+  assert.equal(invalidId.json().message, "Invalid software id");
+});
+
+test("creator payout profile is protected and rejects malformed PayPal or UPI details", async () => {
+  const [unauthenticated, buyerToken] = await Promise.all([
+    app.inject({ method: "GET", url: "/api/creator/payout" }),
+    import("../src/utils/jwt.util"),
+  ]);
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const buyer = buyerToken.generateAccessToken({
+    id: "507f1f77bcf86cd799439011",
+    role: "buyer",
+  });
+  const forbidden = await app.inject({
+    method: "PUT",
+    url: "/api/creator/payout",
+    headers: { cookie: `accessToken=${buyer}` },
+    payload: { payoutMethod: "upi", upiId: "not-a-upi-id" },
+  });
+  assert.equal(forbidden.statusCode, 403);
+
+  const creator = buyerToken.generateAccessToken({
+    id: "507f1f77bcf86cd799439011",
+    role: "creator",
+  });
+  for (const payload of [
+    { payoutMethod: "paypal", paypalEmail: "not-an-email" },
+    { payoutMethod: "upi", upiId: "not-a-upi-id" },
+  ]) {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/creator/payout",
+      headers: { cookie: `accessToken=${creator}` },
+      payload,
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().message, "Enter a valid PayPal email or UPI ID");
+  }
+});
+
+test("admin payout recording requires authentication, a valid order, and a transfer reference", async () => {
+  const unauthenticated = await app.inject({
+    method: "PATCH",
+    url: "/api/admin/orders/507f1f77bcf86cd799439011/payout",
+    payload: { reference: "transfer-123" },
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const { generateAccessToken } = await import("../src/utils/jwt.util");
+  const token = generateAccessToken({
+    id: "507f1f77bcf86cd799439011",
+    role: "admin",
+  });
+  const invalidId = await app.inject({
+    method: "PATCH",
+    url: "/api/admin/orders/not-an-id/payout",
+    headers: { cookie: `accessToken=${token}` },
+    payload: { reference: "transfer-123" },
+  });
+  assert.equal(invalidId.statusCode, 400);
+  const missingReference = await app.inject({
+    method: "PATCH",
+    url: "/api/admin/orders/507f1f77bcf86cd799439011/payout",
+    headers: { cookie: `accessToken=${token}` },
+    payload: { reference: " " },
+  });
+  assert.equal(missingReference.statusCode, 400);
+  assert.equal(missingReference.json().message, "A payout transfer reference is required");
+});
+
 test("malformed access token is rejected", async () => {
   const response = await app.inject({
     method: "GET",
@@ -168,6 +333,22 @@ test("contact form rejects invalid input without sending email", async () => {
   const response = await app.inject({
     method: "POST",
     url: "/api/contact",
+    payload: { name: "", email: "invalid", query: "short" },
+  });
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.json().message, "Not authenticated");
+});
+
+test("authenticated contact requests validate input before saving", async () => {
+  const { generateAccessToken } = await import("../src/utils/jwt.util");
+  const token = generateAccessToken({
+    id: "507f1f77bcf86cd799439011",
+    role: "buyer",
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/contact",
+    headers: { cookie: `accessToken=${token}` },
     payload: { name: "", email: "invalid", query: "short" },
   });
   assert.equal(response.statusCode, 400);

@@ -1,4 +1,8 @@
+import { Readable } from "node:stream";
+import type { FastifyReply } from "fastify";
+
 const GITHUB_API = "https://api.github.com";
+const MAX_REPOSITORY_ARCHIVE_BYTES = 100 * 1024 * 1024;
 
 export function validateGitHubRepositoryUrl(repositoryUrl: string, username: string): {
   owner: string;
@@ -100,4 +104,107 @@ export async function verifyPublicGitHubRepository(repositoryUrl: string, userna
   }
 
   return canonicalUrl;
+}
+
+export async function streamGitHubRepositoryArchive(
+  reply: FastifyReply,
+  repositoryUrl: string,
+  filename: string
+) {
+  let parsedRepository: ReturnType<typeof validateGitHubRepositoryUrl>;
+  try {
+    const url = new URL(repositoryUrl);
+    const username = url.pathname.split("/").filter(Boolean)[0] || "";
+    parsedRepository = validateGitHubRepositoryUrl(repositoryUrl, username);
+  } catch (error) {
+    return reply.code(502).send({
+      success: false,
+      message: error instanceof Error ? error.message : "The saved GitHub repository URL is invalid.",
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${GITHUB_API}/repos/${encodeURIComponent(parsedRepository.owner)}/${encodeURIComponent(parsedRepository.repository)}/zipball`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "Craftmarket-Project-Archive",
+        },
+        signal: controller.signal,
+      }
+    );
+  } catch (error) {
+    clearTimeout(timeout);
+    return reply.code(502).send({
+      success: false,
+      message: error instanceof Error && error.name === "AbortError"
+        ? "GitHub took too long to prepare the project archive."
+        : "Could not connect to GitHub to load the project archive.",
+    });
+  }
+
+  if (!response.ok || !response.body) {
+    clearTimeout(timeout);
+    return reply.code(502).send({
+      success: false,
+      message: `GitHub could not load the project archive (HTTP ${response.status}).`,
+    });
+  }
+
+  let archiveUrl: URL;
+  try {
+    archiveUrl = new URL(response.url);
+  } catch {
+    clearTimeout(timeout);
+    return reply.code(502).send({ success: false, message: "GitHub returned an invalid project archive URL." });
+  }
+  if (
+    archiveUrl.protocol !== "https:" ||
+    archiveUrl.hostname !== "codeload.github.com" ||
+    archiveUrl.username ||
+    archiveUrl.password ||
+    archiveUrl.port
+  ) {
+    clearTimeout(timeout);
+    return reply.code(502).send({ success: false, message: "GitHub returned an untrusted project archive URL." });
+  }
+
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_REPOSITORY_ARCHIVE_BYTES) {
+    clearTimeout(timeout);
+    return reply.code(413).send({ success: false, message: "The GitHub project archive exceeds the 100 MB download limit." });
+  }
+
+  const archiveStream = Readable.from((async function* () {
+    const reader = response.body!.getReader();
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) return;
+        totalBytes += chunk.value.byteLength;
+        if (totalBytes > MAX_REPOSITORY_ARCHIVE_BYTES) {
+          controller.abort();
+          throw new Error("The GitHub project archive exceeds the 100 MB download limit.");
+        }
+        yield chunk.value;
+      }
+    } finally {
+      clearTimeout(timeout);
+      reader.releaseLock();
+    }
+  })());
+
+  reply
+    .header("content-type", "application/zip")
+    .header("content-disposition", `attachment; filename="${filename.replace(/[^a-zA-Z0-9._-]/g, "_")}.zip"`)
+    .header("cache-control", "private, no-store");
+  const archiveLength = response.headers.get("content-length");
+  if (archiveLength) reply.header("content-length", archiveLength);
+  return reply.send(archiveStream);
 }
